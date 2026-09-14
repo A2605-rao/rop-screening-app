@@ -32,66 +32,126 @@ DEVICE = torch.device("cpu")
 IMAGE_SIZE = (384, 384)
 
 # ------------------------------------------------------------------------------
-# AUTOMATIC WEIGHTS DOWNLOADER & LOCATOR
+# DIRECT CHECKPOINT DOWNLOADER & RESOLVER
 # ------------------------------------------------------------------------------
-FOLDER_ID = "1ItVzF_F3oXho-CYGR9wRTlzZQDCRB9_0"
 MODELS_DIR = "models"
+os.makedirs(MODELS_DIR, exist_ok=True)
 
-REQUIRED_FILES = [
-    "unetpp_vessel_best.pth",
-    "binary_rop_best.pth",
-    "patho_stage_best.pth",
-    "unified_rop_best.pth",
-    "convnext_rop_best.pth",
-    "best.pt",
-    "zone.pt",
-    "efficientnet_b4_plus_best.pth"
-]
-
-def find_model_file(filename, search_dir=MODELS_DIR):
-    """Recursively find model files even if gdown creates nested directories."""
-    for root, _, files in os.walk(search_dir):
-        if filename in files:
-            return os.path.join(root, filename)
-    return None
+MODEL_FILE_IDS = {
+    "unetpp_vessel_best.pth": "1sL-GILhsFhaEkmybQKQd7eFIRUIIP8sG",
+    "binary_rop_best.pth": "1KNM1Q1pT9XI23cEfXwnYVcJa2GTPYsgi",
+    "patho_stage_best.pth": "11kQM6-Ag5PjPDbf1cASQhvvKKOr_Hddf",
+    "unified_rop_best.pth": "1yU4NoUS0arwFpA5VbWjlvBom7AruuiqV",
+    "convnext_rop_best.pth": "1tJCRuNBEZemvRVwORKITKhELynJH3xaG",
+    "best.pt": "1sZZ79w5OQflUy1EP6sHwlAUv7syw4PCk",
+    "zone.pt": "1sA9DgOk4BLULgLQvXi6AE6rODIL63-WX",
+    "efficientnet_b4_plus_best.pth": "1vfKCQRXtr-EmtZS9ZDyrKTvDOtDHLdQ3"
+}
 
 @st.cache_resource(show_spinner=False)
 def ensure_models_downloaded():
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    
-    # Check if all files exist somewhere inside MODELS_DIR
-    all_found = all(find_model_file(f) is not None for f in REQUIRED_FILES)
-    
-    if not all_found:
-        with st.spinner("Downloading clinical neural network checkpoints (one-time setup, may take 1-2 mins)..."):
-            url = f"https://drive.google.com/drive/folders/{FOLDER_ID}"
-            gdown.download_folder(url, output=MODELS_DIR, quiet=False, use_cookies=False)
-            
-            # If gdown created nested subdirectories, flatten everything into MODELS_DIR
-            for root, _, files in os.walk(MODELS_DIR):
-                if root == MODELS_DIR:
-                    continue
-                for f in files:
-                    src = os.path.join(root, f)
-                    dst = os.path.join(MODELS_DIR, f)
-                    if not os.path.exists(dst):
-                        os.rename(src, dst)
+    for fname, file_id in MODEL_FILE_IDS.items():
+        dst_path = os.path.join(MODELS_DIR, fname)
+        if not os.path.exists(dst_path) or os.path.getsize(dst_path) == 0:
+            with st.spinner(f"Downloading {fname} from Google Drive..."):
+                gdown.download(id=file_id, output=dst_path, quiet=False)
     return True
 
 ensure_models_downloaded()
+
+def get_path(fname):
+    p = os.path.join(MODELS_DIR, fname)
+    if not os.path.exists(p) or os.path.getsize(p) == 0:
+        raise FileNotFoundError(f"Missing required model checkpoint: {fname}")
+    return p
+
+# ------------------------------------------------------------------------------
+# MODEL ARCHITECTURES
+# ------------------------------------------------------------------------------
+class BaseMultiModalNet(nn.Module):
+    def __init__(self, num_classes=2):
+        super().__init__()
+        self.backbone = models.efficientnet_b4(weights=None)
+        stem = self.backbone.features[0][0]
+        self.backbone.features[0][0] = nn.Conv2d(
+            4, stem.out_channels, stem.kernel_size, stem.stride, stem.padding, bias=False
+        )
+        in_dim = self.backbone.classifier[1].in_features
+        self.backbone.classifier = nn.Identity()
+        self.tabular_mlp = nn.Sequential(
+            nn.Linear(2, 32), nn.BatchNorm1d(32), nn.ReLU(),
+            nn.Dropout(0.2), nn.Linear(32, 32), nn.BatchNorm1d(32), nn.ReLU()
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(in_dim + 32, 256), nn.BatchNorm1d(256),
+            nn.SiLU(), nn.Dropout(0.4), nn.Linear(256, num_classes)
+        )
+
+    def forward(self, img, mask, tab):
+        x = torch.cat([img, mask], dim=1)
+        return self.classifier(torch.cat([self.backbone(x), self.tabular_mlp(tab)], dim=1))
+
+class UnifiedROPNet(nn.Module):
+    def __init__(self, tabular_dim=2):
+        super().__init__()
+        self.backbone = models.efficientnet_b4(weights=None)
+        stem = self.backbone.features[0][0]
+        self.backbone.features[0][0] = nn.Conv2d(
+            4, stem.out_channels, stem.kernel_size, stem.stride, stem.padding, bias=False
+        )
+        visual_dim = self.backbone.classifier[1].in_features
+        self.backbone.classifier = nn.Identity()
+        self.tabular_mlp = nn.Sequential(
+            nn.Linear(tabular_dim, 32), nn.BatchNorm1d(32), nn.ReLU(),
+            nn.Dropout(0.2), nn.Linear(32, 32), nn.BatchNorm1d(32), nn.ReLU()
+        )
+        self.shared_dense = nn.Sequential(
+            nn.Linear(visual_dim + 32, 256), nn.BatchNorm1d(256),
+            nn.SiLU(), nn.Dropout(0.3)
+        )
+        self.head_binary = nn.Linear(256, 2)
+        self.head_stage = nn.Linear(256, 5)
+
+    def forward(self, img, mask, tabular):
+        x_vis = torch.cat([img, mask], dim=1)
+        fused = torch.cat([self.backbone(x_vis), self.tabular_mlp(tabular)], dim=1)
+        shared = self.shared_dense(fused)
+        return self.head_binary(shared), self.head_stage(shared)
+
+class ConvNeXtMultiTaskROPNet(nn.Module):
+    def __init__(self, tabular_dim=2):
+        super().__init__()
+        self.backbone = timm.create_model('convnext_base.fb_in22k_ft_in1k_384', pretrained=False, in_chans=4, num_classes=0)
+        visual_dim = self.backbone.num_features
+        self.tabular_mlp = nn.Sequential(
+            nn.Linear(tabular_dim, 32), nn.BatchNorm1d(32), nn.GELU(),
+            nn.Dropout(0.2), nn.Linear(32, 32), nn.BatchNorm1d(32), nn.GELU()
+        )
+        self.shared_dense = nn.Sequential(
+            nn.Linear(visual_dim + 32, 256), nn.BatchNorm1d(256),
+            nn.GELU(), nn.Dropout(0.3)
+        )
+        self.head_binary = nn.Linear(256, 2)
+        self.head_stage = nn.Linear(256, 5)
+
+    def forward(self, img, mask, tabular):
+        x_vis = torch.cat([img, mask], dim=1)
+        fused = torch.cat([self.backbone(x_vis), self.tabular_mlp(tabular)], dim=1)
+        shared = self.shared_dense(fused)
+        return self.head_binary(shared), self.head_stage(shared)
+
+def build_4channel_plus_model():
+    m = timm.create_model('efficientnet_b4', pretrained=False, num_classes=1)
+    orig_conv = m.conv_stem
+    m.conv_stem = nn.Conv2d(4, orig_conv.out_channels, kernel_size=orig_conv.kernel_size,
+                            stride=orig_conv.stride, padding=orig_conv.padding, bias=(orig_conv.bias is not None))
+    return m
 
 # ------------------------------------------------------------------------------
 # LOAD MODELS ONCE INTO MEMORY
 # ------------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def load_all_models():
-    # Helper to resolve exact path
-    def get_path(fname):
-        path = find_model_file(fname)
-        if not path:
-            raise FileNotFoundError(f"Missing required model checkpoint: {fname}")
-        return path
-
     unet = smp.UnetPlusPlus(encoder_name="resnet34", encoder_weights=None, in_channels=3, classes=1)
     u_ckpt = torch.load(get_path("unetpp_vessel_best.pth"), map_location=DEVICE, weights_only=False)
     unet.load_state_dict(u_ckpt.get('state_dict', u_ckpt.get('model_state_dict', u_ckpt)))
@@ -124,6 +184,15 @@ def load_all_models():
 
 with st.spinner("Loading clinical inference pipelines into memory..."):
     unet_model, bin_model, patho_stager, eff_unified, convnext_model, plus_model, yolo_od, yolo_ridge = load_all_models()
+
+STAGE_NAMES = [
+    'Stage 0 (Normal)',
+    'Stage 1 (Demarcation Line)',
+    'Stage 2 (Ridge)',
+    'Stage 3 (Extraretinal Neovascularization)',
+    'Stage 4+ (Retinal Detachment)'
+]
+
 # ------------------------------------------------------------------------------
 # CLINICAL DECISION LOGIC
 # ------------------------------------------------------------------------------
@@ -274,9 +343,7 @@ if run_button and uploaded_file is not None:
         ridge_res = yolo_ridge.predict(enhanced, conf=0.15, verbose=False)[0]
 
         assigned_zone = "Zone III"
-        ridges_found = 0
         if len(ridge_res.boxes) > 0 and ridge_res.masks is not None:
-            ridges_found = len(ridge_res.boxes)
             min_d = float("inf")
             for m in ridge_res.masks.data.cpu().numpy():
                 m_full = cv2.resize(m, (w_orig, h_orig)) > 0.5
