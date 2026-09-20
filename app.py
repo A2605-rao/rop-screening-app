@@ -397,10 +397,10 @@ if run_button and uploaded_file is not None:
         st.markdown(f"- **Plus Disease Status**: `{plus_status.upper()}` ({plus_prob*100:.1f}%)")
         st.markdown(f"- **Demographics**: `GA = {ga_weeks} wks` | `BW = {bw_grams} g`")
 
-        st.markdown("---")
-        st.subheader("👁️ Estimated Risk of Vision Loss / Blindness")
-        st.markdown(f"**Calculated Probability**: <span style='font-size:1.4em; color:{risk_color}; font-weight:bold;'>{blindness['risk_percentage']}%</span>", unsafe_allow_html=True)
-        st.markdown(f"**Clinical Category**: <span style='color:{risk_color}; font-weight:bold;'>{blindness['risk_category']}</span>", unsafe_allow_html=True)
+        #st.markdown("---")
+        #st.subheader("👁️ Estimated Risk of Vision Loss / Blindness")
+        #st.markdown(f"**Calculated Probability**: <span style='font-size:1.4em; color:{risk_color}; font-weight:bold;'>{blindness['risk_percentage']}%</span>", unsafe_allow_html=True)
+        #st.markdown(f"**Clinical Category**: <span style='color:{risk_color}; font-weight:bold;'>{blindness['risk_category']}</span>", unsafe_allow_html=True)
 
         st.markdown("---")
         st.subheader("🚨 ETROP Clinical Triage")
