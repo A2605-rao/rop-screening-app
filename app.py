@@ -328,8 +328,10 @@ if run_button and uploaded_file is not None:
         # 3. ICROP-3 Zone Detection
         cv2.imwrite("temp_eval.jpg", raw_bgr)
         od_res = yolo_od.predict("temp_eval.jpg", conf=0.25, verbose=False)[0]
+        od_box_draw = None
         if len(od_res.boxes) > 0:
             box = od_res.boxes.xyxy.cpu().numpy()[0].astype(int)
+            od_box_draw = box
             x_od, y_od = int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2)
             dd = max(box[2] - box[0], box[3] - box[1])
         else:
@@ -342,8 +344,10 @@ if run_button and uploaded_file is not None:
         enhanced = cv2.cvtColor(clahe.apply(raw_rgb[:, :, 1]), cv2.COLOR_GRAY2BGR)
         ridge_res = yolo_ridge.predict(enhanced, conf=0.15, verbose=False)[0]
 
+        ridge_boxes_draw = []
         assigned_zone = "Zone III"
         if len(ridge_res.boxes) > 0 and ridge_res.masks is not None:
+            ridge_boxes_draw = ridge_res.boxes.xyxy.cpu().numpy().astype(int)
             min_d = float("inf")
             for m in ridge_res.masks.data.cpu().numpy():
                 m_full = cv2.resize(m, (w_orig, h_orig)) > 0.5
@@ -373,16 +377,35 @@ if run_button and uploaded_file is not None:
     with col1:
         st.subheader("Diagnostic Visualizations")
         canvas = raw_rgb.copy()
-        cv2.circle(canvas, (x_od, y_od), int(r_z1), (255, 0, 255), 3)
-        cv2.circle(canvas, (x_od, y_od), int(r_z2), (255, 165, 0), 3)
+
+        # 1. Draw Concentric ICROP-3 Zone Circles
+        cv2.circle(canvas, (x_od, y_od), int(r_z1), (255, 0, 255), 2)   # Magenta: Zone I
+        cv2.circle(canvas, (x_od, y_od), int(r_z2), (255, 165, 0), 2) # Orange: Zone II
+
+        # 2. Draw Optic Disc (OD) Bounding Box & Label (Cyan)
+        if od_box_draw is not None:
+            bx1, by1, bx2, by2 = od_box_draw
+            cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (0, 255, 255), 2)
+            cv2.putText(canvas, "OD", (bx1, max(by1 - 8, 15)), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.circle(canvas, (x_od, y_od), 3, (0, 255, 255), -1)
+
+        # 3. Draw Detected Peripheral Ridge Bounding Boxes (Red)
+        for rbox in ridge_boxes_draw:
+            rx1, ry1, rx2, ry2 = rbox
+            cv2.rectangle(canvas, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)
+            cv2.putText(canvas, "Ridge", (rx1, max(ry1 - 8, 15)), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
         fig, ax = plt.subplots(1, 2, figsize=(10, 5))
         ax[0].imshow(vmask_orig, cmap="gray")
         ax[0].set_title("Vessel Segmentation (U-Net++)")
         ax[0].axis("off")
+        
         ax[1].imshow(canvas)
         ax[1].set_title(f"Zone Demarcation: {assigned_zone}")
         ax[1].axis("off")
+        
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
