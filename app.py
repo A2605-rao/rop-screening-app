@@ -241,7 +241,7 @@ def evaluate_etrop_risk(stage, zone, plus_status):
             "clinical_code": "Type 1 ROP: Advanced Retinal Detachment (Stage 4+)",
             "urgency": "Immediate bedside laser photocoagulation or anti-VEGF injection", "color": "#E74C3C"
         }
-    if plus_status == "Plus" and zone in ["Zone I", "Zone II"]:
+    if plus_status == "Plus" and zone in ["Zone I", "Zone II","Zone III"]:
         return {
             "level": "HIGH RISK", "action": "Urgent Treatment within 48-72 Hours",
             "clinical_code": f"Type 1 ROP: Severe Posterior Vessel Tortuosity ({zone} with Plus)",
